@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air-Swipe Fullscreen Präsentation</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #000000; /* Tiefschwarz für besten Kontrast */
+            color: white;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Haupt-Präsentationsbereich füllt ALLES aus */
+        #presentation-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+
+        #pdf-canvas {
+            max-width: 100vw;
+            max-height: 100vh;
+            display: block;
+            box-shadow: 0 0 50px rgba(0,0,0,1);
+        }
+
+        /* Schwebender Upload-Button, der im Vollbild verschwindet */
+        #upload-overlay {
+            position: absolute;
+            z-index: 20;
+            background: rgba(20, 20, 25, 0.95);
+            padding: 30px;
+            border-radius: 15px;
+            border: 2px dashed #00ffcc;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            backdrop-filter: blur(10px);
+        }
+
+        #upload-overlay h2 {
+            margin-top: 0;
+            color: #00ffcc;
+        }
+
+        input[type="file"] {
+            display: block;
+            margin: 20px auto 0 auto;
+            background: #2a2a35;
+            border: 1px solid #444;
+            padding: 10px;
+            border-radius: 5px;
+            color: white;
+            cursor: pointer;
+        }
+
+        /* Dezente Status-Meldung oben zentriert */
+        #status-overlay {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.6);
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: #00ffcc;
+            border: 1px solid rgba(0, 255, 212, 0.3);
+            pointer-events: none;
+            z-index: 10;
+            letter-spacing: 1px;
+        }
+
+        /* Unaufdringliche Mini-Webcam unten rechts */
+        #webcam {
+            position: fixed;
+            bottom: 15px;
+            right: 15px;
+            width: 110px;
+            height: 82px;
+            transform: scaleX(-1);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px;
+            z-index: 100;
+            background: #000;
+            opacity: 0.4;
+            transition: opacity 0.3s, width 0.3s, height 0.3s;
+        }
+        /* Wird etwas größer und heller beim Drüberfahren */
+        #webcam:hover {
+            opacity: 0.9;
+            width: 160px;
+            height: 120px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="presentation-container">
+        <div id="status-overlay">Kamera startet...</div>
+        
+        <div id="upload-overlay">
+            <h2>Air-Swipe Präsentation</h2>
+            <p>Wähle eine PDF-Datei aus. Die App wechselt danach automatisch in den Vollbildmodus.</p>
+            <input type="file" id="file-input" accept="application/pdf">
+        </div>
+        
+        <canvas id="pdf-canvas"></canvas>
+    </div>
+
+    <video id="webcam" autoplay playsinline></video>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageIsRendering = false;
+        let pageNumPending = null;
+
+        const container = document.getElementById('presentation-container');
+        const canvas = document.getElementById('pdf-canvas');
+        const ctx = canvas.getContext('2d');
+        const uploadOverlay = document.getElementById('upload-overlay');
+
+        // Optimalen Vollbild-Skalierungsfaktor berechnen
+        function getOptimalScale(page) {
+            const viewport = page.getViewport({ scale: 1 });
+            const scaleX = window.innerWidth / viewport.width;
+            const scaleY = window.innerHeight / viewport.height;
+            return Math.min(scaleX, scaleY);
+        }
+
+        function renderPage(num) {
+            pageIsRendering = true;
+
+            pdfDoc.getPage(num).then(page => {
+                const dynamicScale = getOptimalScale(page);
+                const viewport = page.getViewport({ scale: dynamicScale });
+                
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: ctx,
+                    viewport: viewport
+                };
+
+                page.render(renderContext).promise.then(() => {
+                    pageIsRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                });
+            });
+        }
+
+        function queueRenderPage(num) {
+            if (pageIsRendering) {
+                pageNumPending = num;
+            } else {
+                renderPage(num);
+            }
+        }
+
+        function prevPage() {
+            if (pageNum <= 1) return;
+            pageNum--;
+            queueRenderPage(pageNum);
+        }
+
+        function nextPage() {
+            if (pageNum >= pdfDoc.numPages) return;
+            pageNum++;
+            queueRenderPage(pageNum);
+        }
+
+        // PDF laden & Vollbild triggern
+        document.getElementById('file-input').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file && file.type === "application/pdf") {
+                
+                // Automatisch in den echten Vollbildmodus wechseln
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen();
+                }
+
+                uploadOverlay.style.display = 'none'; // Upload-Fenster ausblenden
+
+                const fileReader = new FileReader();
+                fileReader.onload = function() {
+                    const typedarray = new Uint8Array(this.result);
+                    pdfjsLib.getDocument(typedarray).promise.then(pdf => {
+                        pdfDoc = pdf;
+                        pageNum = 1;
+                        renderPage(pageNum);
+                    });
+                };
+                fileReader.readAsArrayBuffer(file);
+            }
+        });
+
+        // Automatische Anpassung bei Monitorauflösungs-Änderung
+        window.addEventListener('resize', () => {
+            if (pdfDoc) {
+                queueRenderPage(pageNum);
+            }
+        });
+
+        // --- GESTENERKENNUNG ---
+        const videoElement = document.getElementById('webcam');
+        const statusOverlay = document.getElementById('status-overlay');
+
+        let history = [];
+        let cooldown = false;
+        const SWIPE_THRESHOLD_SPEED = 0.85; 
+        const SWIPE_MIN_DISTANCE = 0.18;   
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                const currentX = hand[8].x; 
+                const currentTime = performance.now();
+
+                history.push({ x: currentX, time: currentTime });
+                history = history.filter(pos => currentTime - pos.time < 180);
+
+                if (history.length > 2 && !cooldown) {
+                    const firstPoint = history[0];
+                    const lastPoint = history[history.length - 1];
+                    
+                    const deltaX = lastPoint.x - firstPoint.x;
+                    const deltaTime = (lastPoint.time - firstPoint.time) / 1000;
+
+                    if (deltaTime > 0) {
+                        const speed = Math.abs(deltaX) / deltaTime;
+
+                        if (speed > SWIPE_THRESHOLD_SPEED && Math.abs(deltaX) > SWIPE_MIN_DISTANCE) {
+                            if (deltaX > 0) {
+                                nextPage();
+                                triggerCooldown(`Seite ${pageNum} ➡️`);
+                            } else {
+                                prevPage();
+                                triggerCooldown(`⬅️ Seite ${pageNum}`);
+                            }
+                        }
+                    }
+                }
+            } else {
+                history = [];
+            }
+        }
+
+        function triggerCooldown(actionText) {
+            cooldown = true;
+            history = [];
+            statusOverlay.textContent = actionText;
+            statusOverlay.style.color = "#ff007f";
+            statusOverlay.style.borderColor = "#ff007f";
+            
+            setTimeout(() => {
+                cooldown = false;
+                statusOverlay.textContent = "System Bereit";
+                statusOverlay.style.color = "#00ffcc";
+                statusOverlay.style.borderColor = "rgba(0, 255, 212, 0.3)";
+            }, 1000);
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.75,
+            minTrackingConfidence: 0.75
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({ image: videoElement }); },
+            width: 640,
+            height: 480
+        });
+
+        camera.start().then(() => {
+            statusOverlay.textContent = "System Bereit";
+        }).catch(err => {
+            statusOverlay.textContent = "Kamera-Fehler";
+            console.error(err);
+        });
+    </script>
+</body>
+</html>
